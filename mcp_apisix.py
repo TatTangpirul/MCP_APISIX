@@ -5,7 +5,7 @@ Run with: python mcp_apisix.py
 """
 from mcp.server.fastmcp import FastMCP
 
-import apisix_service
+import MCP_Server.MCP_APISIX.apisix_service as apisix_service
 
 mcp = FastMCP("apisix-admin-server", host="0.0.0.0", port=8002)
 
@@ -26,6 +26,11 @@ def list_routes(env: str) -> dict:
 def get_route(env: str, route_id: str) -> dict:
     """Get the full configuration of one route by id."""
     return apisix_service.get_route(env, route_id)
+
+@mcp.tool()
+def create_route(env: str, route_id: str, route_config: dict) -> dict:
+    """Create a new route in APISIX for an environment."""
+    return apisix_service.create_route(env, route_id, route_config)
 
 
 @mcp.tool()

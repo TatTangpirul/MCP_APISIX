@@ -1,8 +1,10 @@
 # APISIX Admin MCP Server
 
-Read-only MCP tools for querying APISIX routes, upstreams, services, and
-plugins across the Nila project's environments, without giving Claude Code
-direct access to the APISIX admin API.
+Mostly read-only MCP tools for querying APISIX routes, upstreams, services,
+and plugins across the Nila project's environments, without giving Claude
+Code direct access to the APISIX admin API — plus one write operation
+(`create_route`) still being hardened, see the caveat under
+[Available tools](#available-tools).
 
 ## How it works
 
@@ -23,10 +25,14 @@ direct access to the APISIX admin API.
   `FastMCP`, served over Streamable HTTP (same pattern as
   `openwebui_log/middleware/mcp_server.py`).
 
-Only read (`GET`) Admin API operations, plus safe idempotent gateway probes
-for route-matching tests, are implemented. Write operations to the Admin API
-(create/update/delete route) are intentionally out of scope for this first
-pass — see the agile card for the approval-gated write path to add next.
+Everything except `create_route` is read (`GET`) Admin API operations, plus
+safe idempotent gateway probes for route-matching tests. `create_route`
+(`PUT /apisix/admin/routes/{route_id}`, create-or-replace at that id) is the
+first write path — see the caveat under
+[Available tools](#available-tools) before relying on it. Update/delete
+route are still not implemented — see the agile card for the full
+approval-gated write path (dry-run mode, confirmation step) this should
+grow into.
 
 ## Setup
 
@@ -77,6 +83,7 @@ changing one of the ports — both scripts currently default `mcpo` to `:8000`.
 | `get_plugin_config(env, plugin_name)` | Get one plugin's schema/config |
 | `test_route_matching(env, route_id, method="GET", extra_path="")` | Safely test whether a route matches (and which plugins fire) via one live idempotent gateway request — no config changes |
 | `get_upstream_health(env, upstream_id)` | Live health-check status (per-node, from the Control API) for one upstream — `found: false` means it has no health-check policy configured, not an error |
+| `create_route(env, route_id, route_config)` | **Write operation.** `PUT`s `route_config` to `/apisix/admin/routes/{route_id}` — create-or-replace at that id. ⚠️ Not yet safe to expose broadly: uses the same `APISIX_VIEWER_KEY` as every read tool (so will 403 until a separate write-scoped admin key is wired in), and has none of the approval-gate guardrails (dry-run, confirmation step) the agile card calls for around modifications |
 
 `env` is one of: `rag-edge-dev`, `rag-edge-stg`, `seven-deli-dev`,
 `seven-deli-stg`, `allchat-edge-stg` (see `apisix_service.ENVIRONMENTS`).
@@ -139,6 +146,28 @@ curl -s -X POST http://localhost:8000/get_upstream_health \
 # `checks` policy configured at all, confirmed via get_upstream)
 ```
 
+**Create (or replace) a route at a specific id** — currently only
+demonstrable; will 403 against every environment until a write-scoped admin
+key is configured (see the caveat above):
+```bash
+curl -s -X POST http://localhost:8000/create_route \
+  -H 'content-type: application/json' \
+  -d '{
+    "env": "rag-edge-dev",
+    "route_id": "my-new-route-001",
+    "route_config": {
+      "uri": "/foo/*",
+      "methods": ["GET"],
+      "hosts": ["sds-scp-cpall-admin-dev.7-11.io"],
+      "upstream_id": "9dff8669",
+      "plugins": {"limit-req": {"rate": 100, "burst": 20, "rejected_code": 429, "key": "remote_addr"}}
+    }
+  }'
+```
+`route_id` only ever belongs in the URL (what `create_route` does
+internally) — never put an `"id"` field inside `route_config` itself, it's
+redundant and the URL's id wins if they ever disagreed.
+
 ## Audit logging
 
 Every Admin API, gateway, and Control API call is appended as one JSON line
@@ -159,7 +188,12 @@ underlying tool call.
 ## Security note
 
 Every environment currently uses APISIX's stock demo admin/viewer keys
-(publicly known, from APISIX's own docs). This server only uses the
-viewer key and only issues GET requests, but the underlying admin API
-itself is not meaningfully protected — rotate the keys in each
-environment's `config.yaml` ConfigMap independent of this tool.
+(publicly known, from APISIX's own docs) — rotate them in each
+environment's `config.yaml` ConfigMap independent of this tool. Every read
+tool, plus `test_route_matching`'s idempotent gateway probes, only ever
+uses the viewer key. `create_route` is the one exception: it's a genuine
+write operation, gated for now only by the viewer key rejecting it (403) —
+that's an accident of the stock keys' scoping, not a real safeguard.
+Before wiring in a write-capable admin key, add the approval-gate
+guardrails the agile card calls for (dry-run mode, explicit confirmation,
+restricting which fields/environments it can touch).

@@ -301,6 +301,27 @@ def get_route(env: str, route_id: str) -> dict[str, Any]:
     return _admin_get(env, f"/apisix/admin/routes/{route_id}")
 
 
+def create_route(env: str, route_id: str, route_config: dict) -> dict[str, Any]:
+    """Create a new route in APISIX for an environment."""
+    if env not in ENVIRONMENTS:
+        return {"ok": False, "error": f"unknown environment '{env}', must be one of {list(ENVIRONMENTS)}"}
+
+    try:
+        local_port = _ensure_port_forward(env, "admin")
+        resp = requests.put(
+            f"http://127.0.0.1:{local_port}/apisix/admin/routes/{route_id}",
+            headers={"X-API-KEY": _api_key_for(env)},
+            json=route_config,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        _audit("create_route", env, {"route_id": route_id, "route_config": route_config, "status": resp.status_code}, True)
+        return {"ok": True, "env": env, "data": resp.json()}
+    except Exception as e:
+        _audit("create_route", env, {"route_id": route_id, "route_config": route_config, "error": str(e)}, False)
+        return {"ok": False, "env": env, "error": str(e)}
+
+
 def list_upstreams(env: str) -> dict[str, Any]:
     """List all upstreams (and their load-balancing/health-check config) for an environment."""
     return _admin_get(env, "/apisix/admin/upstreams")

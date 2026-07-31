@@ -7,6 +7,18 @@ set -e
 MCPO="$(command -v mcpo || echo "$HOME/Library/Python/3.14/bin/mcpo")"
 cd "$(dirname "$0")"
 
+# Load .env ourselves (exported, so child processes see it) rather than
+# relying on the caller to `source .env` first — plain `source .env`
+# without `set -a` sets shell variables but does NOT export them, so
+# mcp_apisix.py silently starts with no APISIX_VIEWER_KEY.
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+else
+  echo "warning: .env not found (cp .env.example .env first) — APISIX_VIEWER_KEY will be unset" >&2
+fi
+
 # 1. Start the MCP server in the background on 8002.
 python3 mcp_apisix.py &
 MCP_PID=$!

@@ -50,8 +50,10 @@ Requires:
 ## Run
 
 ```bash
-source .env && ./run.sh
+./run.sh
 ```
+
+(`run.sh` loads `.env` itself — no need to `source` it first.)
 
 This starts:
 - `mcp_apisix.py` on `:8002` (the actual MCP server)

@@ -7,11 +7,13 @@ Write operations (create/update/delete route) are intentionally NOT
 implemented here yet — see the agile card's acceptance criteria for the
 approval-gated write path that should be added as a follow-up.
 """
+import json
 import os
 import socket
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -148,6 +150,62 @@ def _ensure_port_forward(env: str, target: str = "admin") -> int:
     raise RuntimeError(f"kubectl port-forward for '{env}' ({target}) did not bind {local_port} in time")
 
 
+AUDIT_LOG_PATH = os.environ.get(
+    "AUDIT_LOG_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "audit.log")
+)
+
+# Cached AWS caller identity for audit attribution. Deliberately NOT cached
+# on failure (e.g. expired SSO session) so a later `aws sso login` heals it
+# on the next call, without restarting the server.
+_actor_identity_cache: dict[str, Any] | None = None
+
+
+def _actor_identity() -> dict[str, Any]:
+    """
+    Resolve the local operator's AWS identity via `aws sts get-caller-identity`
+    for audit attribution. Developers run this server locally under their own
+    AWS SSO session (the same credentials used for kubectl/EKS auth), so this
+    identifies "who" made a call without any separate auth system.
+    """
+    global _actor_identity_cache
+    if _actor_identity_cache is not None:
+        return _actor_identity_cache
+
+    try:
+        result = subprocess.run(
+            ["aws", "sts", "get-caller-identity", "--output", "json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        identity = json.loads(result.stdout)
+        _actor_identity_cache = {"account": identity.get("Account"), "arn": identity.get("Arn")}
+        return _actor_identity_cache
+    except Exception as e:
+        return {"account": "unknown", "arn": "unknown", "error": str(e)}
+
+
+def _audit(action: str, env: str, detail: dict[str, Any], ok: bool) -> None:
+    """
+    Append one JSON-line audit record. Best-effort only — a logging failure
+    must never break the underlying tool call, so all errors are swallowed.
+    """
+    entry = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "actor": _actor_identity(),
+        "action": action,
+        "env": env,
+        "ok": ok,
+        **detail,
+    }
+    try:
+        with open(AUDIT_LOG_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
 def _api_key_for(env: str) -> str:
     """
     Look up the viewer (read-only) admin key for an environment.
@@ -181,8 +239,10 @@ def _admin_get(env: str, path: str) -> dict[str, Any]:
             timeout=10,
         )
         resp.raise_for_status()
+        _audit("admin_get", env, {"path": path, "status": resp.status_code}, True)
         return {"ok": True, "env": env, "data": resp.json()}
     except Exception as e:
+        _audit("admin_get", env, {"path": path, "error": str(e)}, False)
         return {"ok": False, "env": env, "error": str(e)}
 
 
@@ -213,6 +273,7 @@ def _gateway_request(env: str, method: str, path: str, host: str | None = None) 
             timeout=10,
             allow_redirects=False,
         )
+        _audit("gateway_request", env, {"method": method, "path": path, "host": host, "status": resp.status_code}, True)
         return {
             "ok": True,
             "env": env,
@@ -221,6 +282,7 @@ def _gateway_request(env: str, method: str, path: str, host: str | None = None) 
             "body_preview": resp.text[:500],
         }
     except Exception as e:
+        _audit("gateway_request", env, {"method": method, "path": path, "host": host, "error": str(e)}, False)
         return {"ok": False, "env": env, "error": str(e)}
 
 
@@ -263,8 +325,10 @@ def _control_get(env: str, path: str) -> dict[str, Any]:
         local_port = _ensure_port_forward(env, "control")
         resp = requests.get(f"http://127.0.0.1:{local_port}{path}", timeout=10)
         resp.raise_for_status()
+        _audit("control_get", env, {"path": path, "status": resp.status_code}, True)
         return {"ok": True, "env": env, "data": resp.json()}
     except Exception as e:
+        _audit("control_get", env, {"path": path, "error": str(e)}, False)
         return {"ok": False, "env": env, "error": str(e)}
 
 

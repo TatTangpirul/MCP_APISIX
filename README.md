@@ -44,6 +44,8 @@ Requires:
   `*-apisix-gateway` Services, **and** the `*-apisix` Deployment (used for
   `get_upstream_health`'s Control API access), in the namespaces listed in
   `apisix_service.ENVIRONMENTS`
+- `aws` CLI with an active SSO session (`aws sso login`) — used only to
+  attribute audit log entries to your AWS identity, not for cluster access
 
 ## Run
 
@@ -134,6 +136,23 @@ curl -s -X POST http://localhost:8000/get_upstream_health \
 # ("found": false here is correct, not a bug — this upstream has no
 # `checks` policy configured at all, confirmed via get_upstream)
 ```
+
+## Audit logging
+
+Every Admin API, gateway, and Control API call is appended as one JSON line
+to `audit.log` (path overridable via `AUDIT_LOG_PATH`), e.g.:
+```json
+{"ts": "2026-07-31T03:22:25Z", "actor": {"account": "971022779850", "arn": "arn:aws:sts::971022779850:assumed-role/AWSGSDevRole/you@example.com"}, "action": "admin_get", "env": "rag-edge-dev", "ok": true, "path": "/apisix/admin/routes", "status": 200}
+```
+The `actor` is resolved once per process via `aws sts get-caller-identity` —
+since each developer runs this server locally under their own AWS SSO
+session (the same credentials used for `kubectl`/EKS auth), this attributes
+every call without any separate auth system. If the SSO session is expired
+when the server starts, `actor` falls back to `{"account": "unknown", "arn":
+"unknown", "error": "..."}` rather than failing the call — it retries on the
+next call, so running `aws sso login` mid-session self-heals it. Logging
+itself is best-effort: a write failure is swallowed and never breaks the
+underlying tool call.
 
 ## Security note
 
